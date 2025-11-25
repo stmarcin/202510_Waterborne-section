@@ -7,5 +7,16 @@
 
 # My files
 *.html
-data/
 *.Rproj
+
+# temp charts
+*.svg
+*.png
+
+# notes
+*.doc*
+
+# data
+*.xls*
+*.csv
+!data/trimis-waterborne-organisations.csv

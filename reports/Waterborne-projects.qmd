@@ -1,0 +1,279 @@
+---
+title: "Waterborne projects - analysis"
+author: "Marcin Stepniak"
+date-format: DD/MM/YYYY
+date: "10/22/2025" # date in format MM/DD/YYYY
+date-modified: today
+format:
+  html:
+    toc: true
+    toc_float: true
+    toc-depth: 4
+    embed-resources: true
+    self-contained: true
+    code-fold: true
+editor: source
+execute:
+  warning: false
+editor_options: 
+  chunk_output_type: console
+bibliography: [references.bib, references-r5r.bib]
+nocite: |
+  @*
+---
+
+## Introduction: packages, data and functions
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    warning=FALSE, 
+    cache = FALSE,
+    message = FALSE,
+    echo = FALSE)
+```
+
+```{r packages}
+check_libraries <- function(my_libraries, load = TRUE)
+{
+    for (lib in my_libraries)
+    { 
+        if (!requireNamespace(lib, quietly = TRUE))
+            {install.packages(lib, dependencies = TRUE)}
+    }
+    if(load == TRUE)
+    {
+        for (lib in my_libraries)
+        {
+            library(lib, character.only = TRUE)
+        }
+    }
+    rm(lib)
+}
+
+libraries_load <- c("dplyr")
+
+libraries_required <- c("here", "stringr", "readxl", "tidyr")
+
+check_libraries(libraries_load)
+check_libraries(libraries_required, load = FALSE)
+
+rm(libraries_required, 
+   libraries_load,
+   check_libraries)
+```
+
+```{r data-redo-once, eval = FALSE}
+readxl::read_excel(here::here("data", "TRIMIS waterborne-organisations 14052025.xlsx"),
+                             sheet = "all-proj-org") |> 
+    filter(Acronym != "ENDURUNS") |> 
+    select(-subthemes, -subspecifications) |> 
+    left_join(readxl::read_excel(here::here("data", 
+                                            "TRIMIS waterborne-organisations 14052025.xlsx"),
+                                 sheet = "projects-subthemes"),
+              by = "Acronym") |> 
+    rename(theme = subtheme,
+           topic = subspecification)|> 
+    mutate(eu = ifelse(!is.na(`Cordis ID`), "Yes", "No")) |> 
+    readr::write_csv(here::here("data", "trimis-waterborne-organisations.csv")) 
+```
+
+```{r data-read}
+# country codes of EU27 MS
+eu27 <- pull(filter(trimisViz::eu, EU == "EU27"), id)
+
+# trimis: all partipants of projects; full database
+trimis <- readr::read_csv(here::here("data", "trimis-waterborne-organisations.csv"))
+
+# trimis_eu: participants of projects with valid Cordis ID
+trimis_eu <- trimis |> 
+    filter(!is.na(`Cordis ID`))
+
+# trimis_participation: aggregated data for all participants from a country in the project
+# regardless their role in a project
+trimis_participate <- trimis |>
+    group_by(eu, Acronym, Title, country, theme, topic) |> 
+    summarise(ecContribution = sum(ifelse(eu == "Yes" & !is.na(ecContribution), 
+                                          ecContribution, 
+                                          0))) 
+```
+
+```{r data-functions}
+group_orgs <- function(df = trimis, category, detail, eucontr = FALSE)
+{
+    df <- df |>
+        group_by({{category}}, {{detail}})
+    
+    if(eucontr == FALSE)
+    {
+        df |> 
+            summarise(n = n())
+    } else {
+        df |> 
+            filter(eu == "Yes") |> 
+            summarise(n_eu = n(),
+                      eucontr = sum(ecContribution, na.rm = TRUE))
+    }
+}
+
+group_orgs_cat <- function(df = trimis,
+                           category,
+                           detail = "")
+{
+    df |> 
+        group_orgs(category = {{category}},
+                   detail = {{detail}}) |> 
+        full_join(
+            df |> 
+                group_orgs(category = {{category}},
+                           detail = {{detail}},
+                           eucontr = TRUE),
+            by = c(deparse(substitute(category)), deparse(substitute(detail)))
+            ) |> 
+        tidyr::replace_na(list(n_eu = 0, eucontr = 0)) |> 
+        select({{category}}, if(detail != "") detail, n, n_eu, eucontr)
+    
+
+}
+```
+
+## Agregations
+
+### Projects
+
+```{r data-projects}
+projects <- trimis |> 
+    distinct(Acronym, eu, theme, topic) 
+
+themes <- projects |> 
+    group_by(theme, topic) |> 
+    summarise(n = n()) |> 
+    mutate(issue = case_when(
+        theme == "Coordination and support" ~ "Coordination and support",
+        theme == "Operational measures" ~ "Operational measures",
+        TRUE ~ "Technological issues")) |> 
+    mutate(order = case_when(
+        theme == "Alt fuels" ~ 1,
+        theme == "Power and propulsion" ~ 2,
+        theme == "Hull design" ~ 3,
+        theme == "Digitalization" ~ 4,
+        theme == "Coordination and support" ~ 5,
+        theme == "Operational measures" ~ 6)) |> 
+    arrange(order, desc(n))
+
+readr::write_csv(themes, here::here("data", "for-figures", "themes.csv"))
+
+# # projects_themes <- 
+# group_orgs(df = trimis_participate, detail = theme)
+# 
+# projects_topics <- group_orgs(detail = topic)
+```
+
+### Countries: project participation (participant from a country counted once per project)
+```{r date-country-projects}
+trimis_eu_participate <-  trimis_participate |> 
+    filter(country %in% eu27)
+
+country_participation <- trimis_eu_participate |> 
+    group_by(country) |> 
+    summarise(n = n())
+
+trimis_eu_participate |> 
+    group_orgs_cat(category = country)
+
+
+country_participation_theme <- trimis_participate |> 
+    group_orgs_cat(category = country,
+                   detail = theme)
+
+
+
+```
+
+
+
+
+### Countries: participants (counted every participant from a country)
+
+```{r data-countries}
+countries <- group_orgs(trimis, 
+                        category = country,
+                        detail = NULL)
+    
+countries_themes <- group_orgs_cat(category = country,
+                                   detail = theme)
+
+countries_topics <- group_orgs_cat(category = country,
+                                   detail = topic)
+```
+
+### Countries: Leaders
+
+```{r data-countries-leaders}
+leaders <- trimis |> 
+    filter(role == "coordinator") 
+
+leadr_countries <- leaders |> 
+    group_by(country) |> 
+    summarise(n = n())
+
+leaders_themes <- leaders |> 
+    group_orgs_cat(category = country,
+                   detail = theme)
+
+leaders_topics <- leaders |> 
+    group_orgs_cat(category = country,
+                   detail = topic)
+```
+
+### SMEs
+
+```{r data-sme}
+sme <- trimis |> 
+    filter(SME == TRUE)
+
+sme_countries <- sme |> 
+    group_by(country) |> 
+    summarise(n = n())
+
+sme_themes <- sme |> 
+    group_orgs_cat(category = NA,
+                   detail = theme)
+
+sme_topics <- sme |> 
+    group_orgs_cat(category = country,
+                   detail = topic)
+```
+
+### Organisation type
+
+```{r data-activityType}
+# activityType <- trimis_eu |> 
+#     group_by(activityType, subtheme, subspecification) 
+
+activityType <- trimis_eu |> 
+    group_orgs_cat(category = activityType)#,
+                   # detail = NULL)
+
+activityType_themes <- trimis_eu |> 
+    group_orgs_cat(category = activityType,
+                   detail = theme)
+
+activityType_topics <- sme |> 
+    group_orgs_cat(category = country,
+                   detail = topic)
+```
+
+```{r data-activityType}
+orgs <- trimis |> 
+    group_by(activityType, subtheme, subspecification) 
+
+activityType_themes <- activityType |> 
+    group_by(subtheme) |> 
+    summarise(n = n(),
+              eucontr = sum(ecContribution, na.rm = TRUE))
+
+activityType_topics <- activityType |> 
+    group_by(subspecification) |> 
+    summarise(n = n(),
+              eucontr = sum(ecContribution, na.rm = TRUE))
+```
