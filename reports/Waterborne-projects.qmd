@@ -74,6 +74,7 @@ readxl::read_excel(here::here("data", "TRIMIS waterborne-organisations 14052025.
     rename(theme = subtheme,
            topic = subspecification)|> 
     mutate(eu = ifelse(!is.na(`Cordis ID`), "Yes", "No")) |> 
+    mutate(activityType = ifelse(eu == "Yes" & is.na(activityType), "OTH", activityType)) |> 
     readr::write_csv(here::here("data", "trimis-waterborne-organisations.csv")) 
 ```
 
@@ -90,7 +91,7 @@ trimis_eu <- trimis |>
 
 # trimis_participation: aggregated data for all participants from a country in the project
 # regardless their role in a project
-trimis_participate <- trimis |>
+trimis_participation <- trimis |>
     group_by(eu, Acronym, Title, country, theme, topic) |> 
     summarise(ecContribution = sum(ifelse(eu == "Yes" & !is.na(ecContribution), 
                                           ecContribution, 
@@ -119,7 +120,7 @@ group_orgs_cat <- function(df = trimis,
                            category,
                            detail = "")
 {
-    df |> 
+    df <- df |> 
         group_orgs(category = {{category}},
                    detail = {{detail}}) |> 
         full_join(
@@ -128,11 +129,13 @@ group_orgs_cat <- function(df = trimis,
                            detail = {{detail}},
                            eucontr = TRUE),
             by = c(deparse(substitute(category)), deparse(substitute(detail)))
-            ) |> 
-        tidyr::replace_na(list(n_eu = 0, eucontr = 0)) |> 
-        select({{category}}, if(detail != "") detail, n, n_eu, eucontr)
+            ) |>
+        tidyr::replace_na(list(n_eu = 0, eucontr = 0)) 
     
-
+    if(!(deparse(substitute(detail)) %in% c("topic", "theme")))
+        df <- select(df, c(1, 3:5))
+    
+    return(df)
 }
 ```
 
@@ -170,79 +173,74 @@ readr::write_csv(themes, here::here("data", "for-figures", "themes.csv"))
 
 ### Countries: project participation (participant from a country counted once per project)
 ```{r date-country-projects}
-trimis_eu_participate <-  trimis_participate |> 
+trimis_eu_participation <-  trimis_participation |> 
     filter(country %in% eu27)
 
-country_participation <- trimis_eu_participate |> 
-    group_by(country) |> 
-    summarise(n = n())
+country_participation <- trimis_eu_participation |> 
+    group_orgs_cat(category = country) |> 
+    left_join(
+        trimis_eu |> 
+            filter(role == "coordinator") |>
+            group_by(country) |>
+            summarise(lead = n()),
+        by = "country"
+        ) |> 
+    left_join(
+        trimis_eu |> 
+            group_orgs(category = country) |> 
+            rename(partners = n),
+        by = "country"
+        ) |> 
+    left_join(
+        trimis_eu |> 
+            filter(SME == TRUE) |> 
+            group_by(country) |> 
+            summarise(sme = n()),
+        by = "country"
+        ) |> 
+    mutate(not_sme = partners - sme,
+        sme_share = sme/partners) |> 
+    tidyr::replace_na(list(lead = 0, sme = 0, sme_share = 0 )) |> 
+    filter(n > 10) 
 
-trimis_eu_participate |> 
-    group_orgs_cat(category = country)
-
-
-country_participation_theme <- trimis_participate |> 
-    group_orgs_cat(category = country,
-                   detail = theme)
-
-
-
-```
-
-
-
-
-### Countries: participants (counted every participant from a country)
-
-```{r data-countries}
-countries <- group_orgs(trimis, 
-                        category = country,
-                        detail = NULL)
+country_participation|> 
+    readr::write_csv(here::here("data", "for-figures", "country_participation.csv"))
     
-countries_themes <- group_orgs_cat(category = country,
-                                   detail = theme)
+specialisation <- projects |> 
+    group_by(theme) |> 
+    summarise(spec_n = n()) |> 
+    mutate(n_share_avg = spec_n / nrow(projects))
 
-countries_topics <- group_orgs_cat(category = country,
-                                   detail = topic)
+country_specialisation <- trimis_participation |> 
+    filter(country %in% eu27 ) |> 
+    group_orgs_cat(category = country, detail = theme) |> 
+    filter(country %in% country_participation$country) |> 
+    mutate(n_country = sum(n),
+           n_share = n / sum(n)) |> 
+    left_join(specialisation,
+              by = "theme") |> 
+    mutate(specialisation = ifelse(n_share > n_share_avg * 1.1 &
+                                       n > n_country * n_share_avg + 2,
+                                   "yes", "no")) |> 
+    arrange(country, desc(spec_n))
+    
+readr::write_csv(country_specialisation, 
+                 here::here("data", "for-figures", "country_specialisation.csv"))
+
 ```
 
-### Countries: Leaders
+```{r data-sme-overview}
+trimis_eu |> 
+    filter(country %in% eu27 ) |> 
+    group_by(SME) |> 
+    summarise(n = n()) |> 
+    
+    
 
-```{r data-countries-leaders}
-leaders <- trimis |> 
-    filter(role == "coordinator") 
 
-leadr_countries <- leaders |> 
-    group_by(country) |> 
-    summarise(n = n())
-
-leaders_themes <- leaders |> 
-    group_orgs_cat(category = country,
-                   detail = theme)
-
-leaders_topics <- leaders |> 
-    group_orgs_cat(category = country,
-                   detail = topic)
 ```
 
-### SMEs
 
-```{r data-sme}
-sme <- trimis |> 
-    filter(SME == TRUE)
-
-sme_countries <- sme |> 
-    group_by(country) |> 
-    summarise(n = n())
-
-sme_themes <- sme |> 
-    group_orgs_cat(category = NA,
-                   detail = theme)
-
-sme_topics <- sme |> 
-    group_orgs_cat(category = country,
-                   detail = topic)
-```
 
 ### Organisation type
 
